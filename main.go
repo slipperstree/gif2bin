@@ -13,12 +13,17 @@ import (
 var isCircular bool
 var numLeds int
 var ledOffset int
+var isBit2 bool
+var width int
+var height int
+var isC51Code bool
 
 func convertGIF(inputFilename string) {
 	var g *gif.GIF
 	var input *os.File
 	var output *os.File
 	var err error
+	var outputFilename string
 
 	if input, err = os.Open(inputFilename); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to open input file: %s\n", inputFilename)
@@ -31,18 +36,28 @@ func convertGIF(inputFilename string) {
 		return
 	}
 
-	outputFilename := inputFilename + ".bin"
-	if output, err = os.OpenFile(outputFilename, os.O_CREATE | os.O_WRONLY | os.O_TRUNC, 0600); err != nil {
+	if isC51Code {
+		outputFilename = inputFilename + ".c"
+	} else {
+		outputFilename = inputFilename + ".bin"
+	}
+
+	if output, err = os.OpenFile(outputFilename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to open output file: %s\n", outputFilename)
 		return
 	}
 	defer output.Close()
 
-	if isCircular {
-		convertGIFCircular(output, g)
+	if isBit2 {
+		convertGIFRectangularBit2(output, g)
 	} else {
-		convertGIFRectangular(output, g)
+		if isCircular {
+			convertGIFCircular(output, g)
+		} else {
+			convertGIFRectangular(output, g)
+		}
 	}
+
 }
 
 func convertGIFRectangular(output io.Writer, g *gif.GIF) {
@@ -61,7 +76,122 @@ func convertGIFRectangular(output io.Writer, g *gif.GIF) {
 			}
 		}
 	}
-	
+
+}
+
+func getHexChar(decChar uint8) uint8 {
+	if decChar < 10 {
+		return 0x30 + decChar
+	}
+
+	if decChar == 10 {
+		return 'A'
+	}
+
+	if decChar == 11 {
+		return 'B'
+	}
+
+	if decChar == 12 {
+		return 'C'
+	}
+
+	if decChar == 13 {
+		return 'D'
+	}
+
+	if decChar == 14 {
+		return 'E'
+	}
+
+	if decChar == 15 {
+		return 'F'
+	}
+
+	return 0
+}
+
+func convertGIFRectangularBit2(output io.Writer, g *gif.GIF) {
+	var byteData uint8
+	var byteCnt uint
+	var frames uint
+
+	frames = 0
+
+	println("w:", width, "h:", height)
+
+	for _, image := range g.Image {
+		frames++
+		if frames > 3 {
+			//return
+		}
+		println("F:", frames, "Rows:", image.Rect.Max.Y, "Cols", image.Rect.Max.X)
+		for y := 0; y < height; y++ {
+			byteData = 0
+			for x := 0; x < width; x++ {
+				if y >= image.Rect.Max.Y || x >= image.Rect.Max.X {
+					// put 0
+				} else {
+					r, g, b, a := image.At(x, y).RGBA()
+					// r,g,b from 0 - 65535
+					if r < 20000 || g < 20000 || b < 20000 {
+						// put 1 black
+						byteData |= (1 << (7 - (x % 8)))
+					} else {
+						// put 0
+					}
+					r = r * a / 255
+					g = g * a / 255
+					b = b * a / 255
+				}
+
+				if x%8 == 7 {
+					// byte data ready, output
+					if isC51Code {
+						output.Write([]byte{
+							' ', '0', 'x',
+							getHexChar((byteData / 16)),
+							getHexChar((byteData % 16)),
+							',',
+						})
+					} else {
+						output.Write([]byte{
+							byte(byteData),
+						})
+					}
+					byteCnt++
+					byteData = 0
+				}
+			}
+
+			// check if have left bits
+			if (width % 8) > 0 {
+				if isC51Code {
+					output.Write([]byte{
+						' ', '0', 'x',
+						getHexChar((byteData / 16)),
+						getHexChar((byteData % 16)),
+						',',
+					})
+				} else {
+					output.Write([]byte{
+						byte(byteData),
+					})
+				}
+				byteCnt++
+				byteData = 0
+			}
+
+			// New Line
+			if isC51Code {
+				output.Write([]byte{
+					'\r', '\n',
+				})
+			}
+		}
+	}
+
+	println(byteCnt)
 }
 
 func convertGIFCircular(output io.Writer, g *gif.GIF) {
@@ -75,11 +205,11 @@ func convertGIFCircular(output io.Writer, g *gif.GIF) {
 		}
 
 		for i := 0; i < 360; i++ {
-			dx := radius * math.Cos(float64(i) / 180 * math.Pi) / float64(numLeds)
-			dy := radius * math.Sin(float64(i) / 180 * math.Pi) / float64(numLeds)
+			dx := radius * math.Cos(float64(i)/180*math.Pi) / float64(numLeds)
+			dy := radius * math.Sin(float64(i)/180*math.Pi) / float64(numLeds)
 			offsetX := dx * float64(ledOffset)
 			offsetY := dy * float64(ledOffset)
-			offsetRatio := float64(numLeds - ledOffset) / float64(numLeds)
+			offsetRatio := float64(numLeds-ledOffset) / float64(numLeds)
 			dx *= offsetRatio
 			dy *= offsetRatio
 			x := centerX + offsetX
@@ -101,13 +231,17 @@ func convertGIFCircular(output io.Writer, g *gif.GIF) {
 			}
 		}
 	}
-	
+
 }
 
 func init() {
-	flag.BoolVar(&isCircular, "circular", false, "pack pixels in higher-res and circular way")
+	flag.BoolVar(&isCircular, "circular", false, "pack pixels in higher-res and circular way1")
 	flag.IntVar(&numLeds, "num-leds", 0, "set number of leds (only required when using -circular)")
 	flag.IntVar(&ledOffset, "led-offset", 0, "set led offset (only used when using -circular)")
+	flag.BoolVar(&isBit2, "bit2", true, "output 2-bit color format(black and white only)")
+	flag.IntVar(&width, "w", 50, "set width")
+	flag.IntVar(&height, "h", 50, "set height")
+	flag.BoolVar(&isC51Code, "c51", true, "output c51 array code")
 }
 
 func main() {
